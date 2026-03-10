@@ -1,0 +1,21 @@
+{
+    "version": "2.0.0",
+    "options": {
+        "cwd": "${workspaceFolder}"
+    },
+
+    "tasks": [
+        {
+            "label": "make",
+            "command": "make",
+            "args":[
+            ]
+        },
+        {
+            "label":"Build my project",
+            "dependsOn":[
+                "make"                
+            ]
+        }
+    ]
+}

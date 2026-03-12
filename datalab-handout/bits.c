@@ -269,16 +269,16 @@ int howManyBits(int x) {
   int shift = 0;
   x = x ^ sign_mask;
   idx = !(!(x ^ 0))+ (~0);
-  idx = !(!(((mask >> 15) & x) ^ x)) * 16 + idx;
+  idx = (!(!(((mask >> 15) & x) ^ x)) << 4) + idx;
   shift = 24 + (~idx);
-  idx = !(!(((mask >> shift) & x) ^ x)) * 8 + idx;
+  idx = (!(!(((mask >> shift) & x) ^ x)) << 3) + idx;
   shift = 28 + (~idx);
-  idx = !(!(((mask >> shift) & x) ^ x)) * 4 + idx;
+  idx = (!(!(((mask >> shift) & x) ^ x)) << 2) + idx;
   shift = 30 + (~idx);
-  idx = !(!(((mask >> shift) & x) ^ x)) * 2 + idx;    
+  idx = (!(!(((mask >> shift) & x) ^ x)) << 1) + idx;    
   shift = 31 + (~idx);
   idx = !(!(((mask >> shift) & x) ^ x)) + idx;
-  return idx + 2;    
+  return idx + 2;
 }
 //float
 /* 

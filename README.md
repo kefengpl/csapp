@@ -179,12 +179,40 @@ unsigned floatScale2(unsigned uf) {
   return (sign << 31) | ((exp + 1) << 23) | (uf & ((1 << 23) - 1));
 }
 ```
-12. **floatFloat2Int**
+12. **floatFloat2Int：实现 (int) f**
+- 思路是将输入的浮点参数的各个部分（s/exp/frac）提取出来，转化为$(-1)^s×1.xxx×2^E$ 的形式，根据E的数值，对1.xxx...这个数字的小数点右移或者左移。其中，右移会发生**截断**，而不是舍入。
+- 程序实现时，先将frac提取出来，在前面(0~23的23号比特位)补充一个1，得到的数字是 $1.frac × 2^{23}$，这是一个整数。如果E=23，则无需再调整结果；否则要根据E和23的差值左移或者右移这个整数。
+```c
+int floatFloat2Int(unsigned uf) {
+  int sign_bit = (uf >> 31) & 1;
+  int exp = (uf >> 23) & 255;
+  int frac_mask = (1 << 23) - 1;
+  int frac = uf & frac_mask;
+  int int_min =  1 << 31;
+  int E = exp - 127;
+  int abs_val = 0;
+  int decimal = frac | (1 << 23);
+  if (exp >= 158) return int_min;
+  if (exp < 127) return 0;
+  if (E <= 23) abs_val = decimal >> (23 - E);
+  else abs_val = decimal << (E - 23);
+  if (sign_bit) return ~abs_val + 1;
+  return abs_val;
+}
+```
 
 13. **floatPower2: 实现 2.0^x**
 - 如果结果太小（非规格化值），那么返回0。float能表示的最小规格化正值是frac = 0并且 exp = 1的时候，这个数据是 $2^{-126}$，所以当 x < 126 时，函数应当返回0。
-- float 能表示的最大数值(非inf)，exp = 255 - 1 = 254，E = 254 - 127 = 127。
-
+- float 能表示的最大数值(非inf)，exp = 255 - 1 = 254，E = 254 - 127 = 127。所以当 x > 127 的时候，函数返回 Inf。
+- 一般情况：$2.0 ^ x = 1.0 \times 2^x$，所以 frac 部分应该全0。根据 exp = E + bias = x + bias，将 x + 127 得到 exp，然后左移23位到 exp 的比特位区域即可。
+- 性能问题：本题运行可能会超时，将 btest.c 里面的这个宏 #define TIMEOUT_LIMIT 的数值由10改为20或者更长的时间即可。
+```c
+unsigned floatPower2(int x) {
+    if (x < -126) return 0;
+    if (x >= 128) return 255 << 23;
+    return (x + 127) << 23;
+}
+```
 **知识总结：整数表示**
 - 需要了解原码、补码、反码转换关系，注意 $-x = ~x + 1$。
 - C语言的>>是算术右移，高位补符号位。

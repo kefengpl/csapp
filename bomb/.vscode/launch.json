@@ -1,0 +1,18 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug",
+            "program": "bomb",
+            "args": ["answer.txt"],
+            "initCommands": [
+                // "breakpoint set --name main"
+                //"breakpoint set --address 0x00400E4E",
+                "breakpoint set --name phase_6"
+                //"breakpoint set --name read_six_numbers"
+             ]
+        } 
+    ]
+} 

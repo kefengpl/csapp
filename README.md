@@ -1,5 +1,6 @@
 # CSAPP LAB
 ## LAB1 DataLab
+### 实验部分
 1. **bitXor 使用&、~符号实现按位异或**
 - ~x & y 可以得到 y 是 1 且 x 是 0 的部分；x & ~y 可以得到 x 是 1 且 y 是 0 的部分，让二者取并集即可。
 - 取并集方法：根据 $\overline{A∪B} = \bar{A}∩\bar{B} ⇒ A∪B = \overline{\bar{A}∩\bar{B}} $，让 (~x & y) 和 (x & ~y) 各自取反，然后取交(&)，最后整体取反即可。
@@ -213,7 +214,7 @@ unsigned floatPower2(int x) {
     return (x + 127) << 23;
 }
 ```
-**知识总结：整数表示**
+### 知识总结：整数表示
 - 需要了解原码、补码、反码转换关系，注意 $-x = ~x + 1$。
 - C语言的>>是算术右移，高位补符号位。
 - 计算机将减法视作加法，有下列等价关系：$y - x \Leftrightarrow y + (\sim{x}) + 1$
@@ -309,7 +310,7 @@ Double precision (64 bits)
 - 综上，我们获得了12.34的float存储：
 $$0\:10000010\:1000 1010 1110 0001 0100 100$$
 
-**测试通过展示**
+### 测试通过展示
 ```bash
 >> ./dlc bits.c
 >> ./btest
@@ -329,3 +330,149 @@ Score   Rating  Errors  Function
  4      4       0       floatPower2
 Total points: 36/36
 ```
+## LAB2 BombLab
+### 准备阶段
+- 学习 CMU 15-213 （2015Fall版本即可）的这些课程：Machine Prog: Basics, Machine Prog: Control, Machine Prog: Procedures，参考这三节课的课件。或者看 CSAPP 第二章。它们会从0开始教你 X86-64 汇编语言的语法，以及 c 语言的 calling convections。
+- 实验环境：Windows11 系统的 WSL2 + VSCODE。
+- 去官网 https://csapp.cs.cmu.edu/3e/labs.html 下载实验文件`Self-Study Handout`到 LINUX 机器（比如WSL2），然后解压。此外，建议下载`Writeup`，以得知这个实验要干什么，并获得一些实验提示。
+- 核心文件是可执行文件`bomb`，需要对它反汇编。
+- bomb.c 可以查看程序的大致结构，但是所调用函数的具体实现是没有的，15213的实验课件里面提到"Source file just makes fun of you."。下面是每个 phase 的结构。bomblab 分为六个 phase（可理解为6个函数），每个 phase 读取一行字符串输入，然后做一些未知的事情，如果你输入的字符串是正确的，那么就会调用 phase_defused 解除炸弹。
+```c
+input = read_line();             /* Get input                   */
+phase_1(input);                  /* Run the phase               */
+phase_defused();                 /* Drat!  They figured it out!
+```
+- 根据Writeup的提示，在实验目录运行命令`objdump -d bomb`获得`bomb`的汇编代码，检索`phase_1`的代码段，发现里面有个`call 40143a <explode_bomb>`，这是炸弹爆炸的调用。它前面有个`je`命令，如果`je`条件跳转的条件满足，它就会跳过炸弹爆炸的代码。所以，我们的输入需要使得代码能跳过`call 40143a <explode_bomb>`。
+```asm
+0000000000400ee0 <phase_1>:
+  400ee0:	48 83 ec 08          	sub    $0x8,%rsp
+  400ee4:	be 00 24 40 00       	mov    $0x402400,%esi
+  400ee9:	e8 4a 04 00 00       	call   401338 <strings_not_equal>
+  400eee:	85 c0                	test   %eax,%eax
+  400ef0:	74 05                	je     400ef7 <phase_1+0x17>
+  400ef2:	e8 43 05 00 00       	call   40143a <explode_bomb>
+  400ef7:	48 83 c4 08          	add    $0x8,%rsp
+  400efb:	c3                   	ret
+```
+- 根据WriteUp，每个phase需要一行字符串输入。你可以运行bomb程序在命令行根据程序提示逐行输入，也可以从文本文件中直接读取。在实验目录中创建文件`answer.txt`, 执行下列命令，程序将 **逐行** 读取文件作为每个 phase 的输入字符串。
+```bash
+./bomb answer.txt
+```
+### 图形化调试工具
+- 本实验需要使用调试工具。由于我的 WSL 配置了 clangd + lldb 环境，所以所以本实验我直接使用 lldb 作为调试工具，而未使用 gdb。与 gdb 相比，lldb 的调试命令更加直观。
+- 其中，lldb 在函数开头打断点的语法是`breakpoint set --name {function_name}`。
+- vscode 可以为调试提供图形化界面。在bomblab的实验目录中，创建一个`.vscode/launch.json`，写入下列内容：
+```json
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug",
+            "program": "bomb",
+            "args": ["answer.txt"],
+            "initCommands": [
+                "breakpoint set --name main"
+                // "breakpoint set --name phase_1",
+                "breakpoint set --name explode_bomb"
+             ]
+        } 
+    ]
+} 
+```
+- 目前的实验目录结构如下：
+```
+.
+├── .vscode
+│   └── launch.json
+├── README
+├── answer.txt
+├── bomb
+└── bomb.c
+```
+- （看下图）在实验目录，点击 vscode 左侧边栏的运行和调试，然后点击左上方的绿色运行按钮(在Debug旁边)，将会打开一个窗口，显示 main 函数的汇编代码，并且程序执行到`cmpl   $0x1, %edi`。与此同时，界面右上方有一个浮动工具栏，显示了 播放按钮▶，单步执行，单步跳入，单步跳出按钮和终止调试按钮。由此，本实验的调试方式变得和一般程序的图形化界面调试类似了，只不过一般程序我们调试的是 C/Java/Python 等高级语言，这里我们调试的是汇编代码。除了初始在`launch.json`文件中设置断点外，程序执行过程中，可直接通过图形化界面的方式，在汇编代码的某一行左侧通过点击设置断点。
+![alt text](<README-images/屏幕截图 2026-03-26 144138.png>)
+- 在程序执行到 call 指令时，点击单步跳入⬇，效果和 C 语言程序执行时跳入某个被调用的函数体内部是一致的。
+- 调试控制台可以在下图底部红框处输入调试命令，比如打印寄存器的值：`print $rsp`，读取内存`M[%rsp + 8]`：`memory read $rsp+8`。此外，图片左上方的`变量`栏可以选择`Registers`查看`%rax, %rbx...`等寄存器的数值。
+![alt text](<README-images/屏幕截图 2026-03-26 150224.png>)
+- 此外，为了 **防止炸弹爆炸** ，在前文提及的`launch.json`文件中，在`explode_bomb`函数的开头打了断点：`breakpoint set --name explode_bomb`。这样会使得当程序执行`call 40143a <explode_bomb>`的时候，程序通过 call 指令跳入 explode_bomb 内部后就会停止执行，如下图所示。此时终止调试就可以防止炸弹爆炸了。当然，我们的炸弹是离线版本，所以随便炸。部分学校会部署这个实验，每次爆炸会上传服务器，然后扣除一些分数，此时可以参考此方法，使得炸弹快爆炸时把程序停下来，以减少分数损失。
+![alt text](README-images/image.png)
+### main 函数分析
+- 下面的代码段列出了 main 函数调用 phase_1 ~ phase_6 的部分。每个 phase 都是先读取一行输入，然后调用相应的 phase，如果在 phase 执行过程中没有发生爆炸，那么就调用 phase_defused 表示炸弹被拆除。%rdi 是这些 phase 的唯一参数。其中，用户的输入字符串的地址存放在 %rdi 中，读取 %rdi 指向的内存，即可获得用户输入的字符串。具体而言，在调试控制台输入命令`memory read -format s $rdi`即可直接打印出用户输入的字符串。
+```asm
+00400E32: E8 67 06 00 00                callq  0x40149e  ; read_line
+00400E37: 48 89 C7                      movq   %rax, %rdi
+00400E3A: E8 A1 00 00 00                callq  0x400ee0  ; phase_1
+00400E3F: E8 80 07 00 00                callq  0x4015c4  ; phase_defused
+00400E44: BF A8 23 40 00                movl   $0x4023a8, %edi  ; imm = 0x4023A8 
+00400E49: E8 C2 FC FF FF                callq  0x400b10  ; symbol stub for: puts
+00400E4E: E8 4B 06 00 00                callq  0x40149e  ; read_line
+00400E53: 48 89 C7                      movq   %rax, %rdi
+00400E56: E8 A1 00 00 00                callq  0x400efc  ; phase_2
+00400E5B: E8 64 07 00 00                callq  0x4015c4  ; phase_defused
+00400E60: BF ED 22 40 00                movl   $0x4022ed, %edi  ; imm = 0x4022ED 
+00400E65: E8 A6 FC FF FF                callq  0x400b10  ; symbol stub for: puts
+00400E6A: E8 2F 06 00 00                callq  0x40149e  ; read_line
+00400E6F: 48 89 C7                      movq   %rax, %rdi
+00400E72: E8 CC 00 00 00                callq  0x400f43  ; phase_3
+00400E77: E8 48 07 00 00                callq  0x4015c4  ; phase_defused
+00400E7C: BF 0B 23 40 00                movl   $0x40230b, %edi  ; imm = 0x40230B 
+00400E81: E8 8A FC FF FF                callq  0x400b10  ; symbol stub for: puts
+00400E86: E8 13 06 00 00                callq  0x40149e  ; read_line
+00400E8B: 48 89 C7                      movq   %rax, %rdi
+00400E8E: E8 79 01 00 00                callq  0x40100c  ; phase_4
+00400E93: E8 2C 07 00 00                callq  0x4015c4  ; phase_defused
+00400E98: BF D8 23 40 00                movl   $0x4023d8, %edi  ; imm = 0x4023D8 
+00400E9D: E8 6E FC FF FF                callq  0x400b10  ; symbol stub for: puts
+00400EA2: E8 F7 05 00 00                callq  0x40149e  ; read_line
+00400EA7: 48 89 C7                      movq   %rax, %rdi
+00400EAA: E8 B3 01 00 00                callq  0x401062  ; phase_5
+00400EAF: E8 10 07 00 00                callq  0x4015c4  ; phase_defused
+00400EB4: BF 1A 23 40 00                movl   $0x40231a, %edi  ; imm = 0x40231A 
+00400EB9: E8 52 FC FF FF                callq  0x400b10  ; symbol stub for: puts
+00400EBE: E8 DB 05 00 00                callq  0x40149e  ; read_line
+00400EC3: 48 89 C7                      movq   %rax, %rdi
+00400EC6: E8 29 02 00 00                callq  0x4010f4  ; phase_6
+00400ECB: E8 F4 06 00 00                callq  0x4015c4  ; phase_defused
+00400ED0: B8 00 00 00 00                movl   $0x0, %eax
+00400ED5: 5B                            popq   %rbx
+00400ED6: C3                            retq   
+```
+- 在弄清函数调用与输入之后，在拆解每个炸弹时，可将断点直接设置在每个 phase 函数体的开头。所以在`launch.json`中，可如下设置：
+```json
+"initCommands": [
+    "breakpoint set --name phase_1", // 后续根据需要，将 phase_1 替换为 phase_2, phase_3, ..., phase_6
+    "breakpoint set --name explode_bomb"
+]
+```
+- 此时每次运行 debug 的时候，将直接打开新窗口显示每个 phase 具体实现的汇编代码。
+### phase1
+```asm
+; Symbol: phase_1
+00400EE0: 48 83 EC 08                   subq   $0x8, %rsp
+00400EE4: BE 00 24 40 00                movl   $0x402400, %esi  ; imm = 0x402400 
+00400EE9: E8 4A 04 00 00                callq  0x401338  ; strings_not_equal
+00400EEE: 85 C0                         testl  %eax, %eax
+00400EF0: 74 05                         je     0x400ef7  ; <+23>
+00400EF2: E8 43 05 00 00                callq  0x40143a  ; explode_bomb
+00400EF7: 48 83 C4 08                   addq   $0x8, %rsp
+00400EFB: C3                            retq  
+```
+- 读汇编注释，你会发现有个`strings_not_equal`，说明是将用户输入和它里面的某个字符串相比较。
+- 下面的代码表示，strings_not_equal 需要返回 0 (返回结果在 %eax)，才能触发条件跳转，否则就爆炸。
+```asm
+testl  %eax, %eax
+je     0x400ef7  ; <+23>
+callq  0x40143a  ; explode_bomb
+```
+- 根据函数调用传参方式，`%rdi`存放第一个字符串的地址（也就是用户输入字符串），`%rsi`存放了第二个字符串的地址（也就是内置的比较字符串）。所以我们读取`%rsi`指向的内存地址。将程序单步执行（Step Over）到`callq  0x401338  ; strings_not_equal`这行，然后在调试控制台输入以下命令(`$rsi`可以写为`$esi`)。
+```
+memory read -format s $rsi
+```
+得到的输出是：
+```
+0x00402400: "Border relations with Canada have never been better."
+```
+所以phase1的答案是：`Border relations with Canada have never been better.`
+### phase2

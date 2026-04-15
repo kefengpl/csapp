@@ -5,10 +5,10 @@
             "type": "lldb",
             "request": "launch",
             "name": "Debug",
-            "program": "rtarget",
+            "program": "ctarget",
             "args": ["-q", "-i", "exploit-raw.txt"],
             "initCommands": [
-                "breakpoint set --name touch3",
+                "breakpoint set --name test",
              ]
         } 
     ]

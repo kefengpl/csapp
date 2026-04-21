@@ -5,7 +5,7 @@
             "type": "lldb",
             "request": "launch",
             "name": "Debug",
-            "program": "ctarget",
+            "program": "rtarget",
             "args": ["-q", "-i", "exploit-raw.txt"],
             "initCommands": [
                 "breakpoint set --name test",

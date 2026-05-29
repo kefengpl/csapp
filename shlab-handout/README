@@ -1,0 +1,45 @@
+################
+CS:APP Shell Lab
+################
+
+Files:
+
+Makefile	# Compiles your shell program and runs the tests
+README		# This file
+tsh.c		# The shell program that you will write and hand in
+tshref		# The reference shell binary.
+
+# The remaining files are used to test your shell
+sdriver.pl	# The trace-driven shell driver
+trace*.txt	# The 15 trace files that control the shell driver
+tshref.out 	# Example output of the reference shell on all 15 traces
+
+# Little C programs that are called by the trace files
+myspin.c	# Takes argument <n> and spins for <n> seconds
+mysplit.c	# Forks a child that spins for <n> seconds
+mystop.c        # Spins for <n> seconds and sends SIGTSTP to itself
+myint.c         # Spins for <n> seconds and sends SIGINT to itself
+
+# 提示
+- `/bin/echo -e tsh> ./myspin 2 \046`是一个前台任务，打印出字符串`tsh> ./myspin 2 \046`。
+- 在`>tsh`依次输入下面两行命令，为何在第二条命令时卡住？
+```
+/bin/echo -e tsh> ./myspin 2 \046
+/bin/echo -e tsh> ./myspin 3 \046
+```
+- 因为这俩命令都是前台任务，所以会执行`waitfg`，你先前的`waitfg`如下，如果进入函数时tsh就已经接收信号了，那么wihle循环未进入，你的SIGCHLD是无法解锁的。所以需要添加解SIGCHLD信号的代码，如下方注释的代码所示。
+```c
+void waitfg(pid_t pid)
+{
+    printf("C A L L ---> 执行 waitfg\n");
+    sigset_t child_mask, prev_mask;
+    sigaddset(&child_mask, SIGCHLD);
+    sigprocmask(SIG_BLOCK, &child_mask, &prev_mask);
+    while (fgpid(jobs)) {
+        sigsuspend(&prev_mask);
+    }
+    // 添加的代码
+    // sigprocmask(SIG_SETMASK, &prev_mask, NULL);
+    return;
+}
+```

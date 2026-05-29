@@ -1,0 +1,21 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug",
+            "program": "tsh",
+            "args": [],
+            "terminal": "integrated",
+            "initCommands": [
+                "settings set target.process.follow-fork-mode parent"
+            ],
+            "preLaunchTask": "MAKE",
+            "sourceMap": {
+                ".": "${workspaceFolder}"  
+            },
+
+        } 
+    ]
+}

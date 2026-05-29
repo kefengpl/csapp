@@ -1,0 +1,22 @@
+{
+    "version": "2.0.0",
+
+    "tasks": [
+        {
+            "label": "make",
+            "command": "make",
+            "args":[
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+        },
+        {
+            "label": "MAKE",
+            "dependsOn":[
+                "make"                
+            ]
+        }
+    ]
+}

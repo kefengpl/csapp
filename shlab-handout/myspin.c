@@ -12,7 +12,6 @@
 int main(int argc, char **argv) 
 {
     int i, secs;
-
     if (argc != 2) {
 	    fprintf(stderr, "Usage: %s <n>\n", argv[0]);
 	    exit(0);

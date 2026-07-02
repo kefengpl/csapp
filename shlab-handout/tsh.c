@@ -88,6 +88,7 @@ typedef void handler_t(int);
 handler_t *Signal(int signum, handler_t *handler);
 
 pid_t Fork(void);
+void print_mask(sigset_t *mask);
 
 /*
  * main - The shell's main routine 
@@ -185,9 +186,9 @@ void eval(char *cmdline)
         sigprocmask(SIG_BLOCK, &new_mask, &old_mask);
         pid = Fork();
         if (!pid) {
-            sigprocmask(SIG_SETMASK, &old_mask, NULL);
             // puts the child in a new process group whose group ID is identical to the child's PID
             setpgid(0, 0); 
+            sigprocmask(SIG_SETMASK, &old_mask, NULL);
             if (execve(argv[0], argv, NULL) < 0) {
                 printf("%s: Command not found\n", argv[0]);
                 exit(0);
@@ -376,7 +377,10 @@ void sigchld_handler(int sig)
             getjobpid(jobs, pid)->state = ST;
             printf("Job [%d] (%d) stopped by signal %d\n", 
                    pid2jid(pid), pid, WSTOPSIG(child_status));               
-        } else {
+        } else { // 子进程 terminated 的情况
+            //! \note 应该先检查 if(WIFSIGNALED(status)) 判断程序是否异常退出，然后再用 WTERMSIG(child_status)
+            //! \note 获取异常终止原因。因为子进程terminated可能正常退出也可能异常退出。正常退出只 deletejob 即可。
+            //! \note 只有子进程异常终止且是由于 SIGINT 信号导致的终止才需要 printf。
             if (WTERMSIG(child_status) == SIGINT) {
                 printf("Job [%d] (%d) terminated by signal %d\n", 
                             pid2jid(pid), pid, WTERMSIG(child_status));
@@ -396,6 +400,7 @@ void sigchld_handler(int sig)
  */
 void sigint_handler(int sig) 
 {
+    int old_errno = errno;
     pid_t fg_pid;
     sigset_t all_mask, prev_mask;
     sigfillset(&all_mask);
@@ -405,6 +410,7 @@ void sigint_handler(int sig)
         kill(-fg_pid, SIGINT);
     }
     sigprocmask(SIG_SETMASK, &prev_mask, NULL);
+    errno = old_errno;
     return;
 }
 
@@ -415,6 +421,7 @@ void sigint_handler(int sig)
  */
 void sigtstp_handler(int sig) 
 {
+    int old_errno = errno;
     pid_t fg_pid;
     sigset_t all_mask, prev_mask;
     sigfillset(&all_mask);
@@ -425,6 +432,7 @@ void sigtstp_handler(int sig)
         kill(-fg_pid, SIGTSTP);
     }
     sigprocmask(SIG_SETMASK, &prev_mask, NULL);
+    errno = old_errno;
     return;
 }
 
@@ -657,6 +665,14 @@ pid_t Fork(void) {
     return pid;
 }
 
+void print_mask(sigset_t *mask)
+{
+    for (int sig = 1; sig < NSIG; sig++) {
+        if (sigismember(mask, sig)) {
+            printf("blocked signal: %d\n", sig);
+        }
+    }
+}
 
 
 

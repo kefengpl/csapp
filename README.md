@@ -3,3 +3,4 @@
 - [LAB1 DataLab](solution-docs/datalab.md)
 - [LAB2 BombLab](solution-docs/bomblab.md)
 - [LAB3 AttackLab](solution-docs/attacklab.md)
+- [LAB6 AttackLab](solution-docs/shelllab.md)

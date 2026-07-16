@@ -384,6 +384,512 @@ pause();
 sigprocmask(SIG_SETMASK, &raw, NULL); // 恢复对 SIGCHLD 的阻塞
 ```
 - 由于在即将执行pause()时才解除对SIGCHLD的阻塞，且解除SIGCHLD阻塞和调用pause()之间不会被打断。这就消除了竞争条件。
+## ShellLab实验
+### 测试脚本解读
+- 为了防止找不到完成实验的方向，实验文档中提到`Use the trace files to guide the development of your shell.`，你可以面向测试用例编程。输入命令`make test01`就可以运行第一个测试了，这个测试默认是通过的，是赠送的测试用例。它包含两行，一行一个单词：`(line1)CLOSE (line2)WAIT`。
+- 那么问题来了，这是什么含义？我们的tiny shell是如何理解这两行的？
+- **`sdriver.pl`：** 若要理解测试的运行原理，需要我们对这个脚本有简要理解。它的大致作用：通过`fork()`系统调用启动我们的`tsh`程序，逐行读取`trace{xx}.txt`的内容。测试程序通过`Writer`向`tsh`发送输入内容。每行内容`$line`主要分为三种情况：
+1. TSTP\INT\QUIT\KILL：测试程序通过kill系统调用向`tsh`发送对应的信号。
+2. CLOSE\WAIT\SLEEP：①CLOSE：关闭Writer，`tsh`将无法接收到任何输入；②WAIT：测试程序等待并回收子进程`tsh`；③SLEEP：测试程序自身调用`sleep(time)`。
+3. 其他输入：通过Writer这个管道将`$line`发送到`tsh`，比如`trace2`的`quit`，它不是大写的QUIT，所以测试程序不会向`tsh`发送QUIT信号，而是会转发`quit`到`tsh`作为输入。其效果类似于你在linux的命令行输入`quit`并敲击回车。
+- 测试脚本中有很多类似于下面的行，即：第一行是`echo`+命令，第二行是命令本身。以下面两行为例，第一行被测试程序转发到`tsh`后，`tsh`的处理为：`/bin/echo`是回显命令，`-e`：激活转义字符的解析功能，`tsh> ./myspin 1 \046`是回显字符串，由于`-e`的存在，`\046`会被解析为`&`。因此，第一行只有打印功能，不需要`tsh`执行`./myspin`。第二行则是真正需要让`tsh`执行`./myspin`程序。
+```
+/bin/echo -e tsh> ./myspin 1 \046
+./myspin 1 &
+```
+### 系统调用的错误处理
+- 根据CSAPP的建议，系统调用需要处理返回值为-1的情况。这里使用Stevens-style error-handling wrappers风格对fork调用进行包装，形成`Fork()`函数，如下所示。后续创建子进程时，将使用`Fork`调用。
+```c
+pid_t Fork(void) {
+    pid_t pid = 0;
+    if ((pid = fork()) < 0) 
+        unix_error("vely sad. fork error.\n");
+    return pid;
+}
+```
+### 热身：实现内置命令quit, jobs
+- 实验文档中有下面一句话，说明内置命令`quit jobs fg bg`皆为前台运行，且直接在`./tsh`这个进程运行，无需fork子进程。
+``` 
+If the first word is a built-in command, the shell immediately executes the command in the current process. 
+```
+- 查看`tsh.c`，`main`循环读取用户输入命令和`parseline`解析用户输入命令都已经写好了。你需要在`eval`函数中处理内置命令，并处理这些内置命令。
+- **`builtin_cmd`函数：** 实验文档写着：`builtin_cmd: Recognizes and interprets the built-in commands`，所以该函数中会区分四个内置命令，并且由于该函数在`tsh.c`中标出了`return 0; /* not a builtin command */`，所以该函数的返回值可代表bool：是否内置命令，返回1表示是内置命令，返回0表示非内置命令。于是，`builtin_cmd`在`eval`中可写在if判断中。
+- **内置命令检测：** C语言需要使用`strcmp`检验字符串相等，使用类似`if (!strcmp(cmdline, "quit"))`的语法判断`cmdline == "quit"`。
+- **内置命令quit：** 处理方式就是直接退出进程，使用系统调用`exit(0)`即可。
+- **内置命令jobs：** `tsh.c`中有一个全局数据结构`struct job_t jobs[MAXJOBS]; /* The job list */`，管理tiny shell中的所有fork()出的进程。所以你需要访问与jobs相关的函数，`tsh.c`中有一个`listjobs`已经写好了，调用`listjobs(jobs)`即可。另外，根据CSAPP教材中对于写信号处理程序的指引"Protect accesses to shared data structures by temporarily blocking all signals."，`listjobs(jobs)`涉及对全局变量jobs的读操作，所以可暂时阻塞所有信号。于是，在`eval`和`builtin_cmd`中填充下列代码。
+```c
+void eval(char* cmdline) {
+    int bg = 0;
+    char* argv[MAXARGS];
+    char buf[MAXLINE];
+    strcpy(buf, cmdline);
+    bg = parseline(buf, argv);
+    if (argv[0] == NULL)  return;
+    if (!builtin_cmd(argv)) {
+        // 待填充的处理非内置命令的情况
+    }
+    return;
+}
+
+int builtin_cmd(char **argv) {
+    if (!strncmp(argv[0], "quit", 4)) {
+        exit(0);
+    }
+    if (!strncmp(argv[0], "jobs", 4)) {
+        sigset_t full_mask, prev_mask;
+        sigfillset(&full_mask);
+        sigprocmask(SIG_BLOCK, &full_mask, &prev_mask);
+        listjobs(jobs);
+        sigprocmask(SIG_SETMASK, &prev_mask, NULL);
+        return 1;
+    }
+    // bg fg 命令的处理方式待填充
+    return 0;     /* not a builtin command */
+}
+```
+### 运行前台任务：代码框架
+- trace03.txt会测试：`/bin/echo tsh> quit`。这是一个前台任务，需要你的`tsh`运行`echo`程序，回显字符串`tsh> quit`。显然，我们需要在`eval`函数的`if (!builtin_cmd(argv))`分支内填写代码了。
+- `/bin/echo tsh> quit`这个命令，在parseline解析后，argv数组中，`argv[0]="/bin/echo" argv[1]="tsh> quit"`。非内置命令皆需要fork子进程，随后在子进程使用`execve`函数，将argv的响应参数传入即可。
+- 同时，根据实验文档的提示：默认情况下Ctrl+C会发向前台进程组，`tsh`fork出的子进程默认和`tsh`同属前台进程组，所以在`tsh`执行前台任务时按下Ctrl+C，`tsh`和子进程都会收到SIGINT信号。`tsh`的`sigint_handler`的函数注释表明本实验希望`tsh`捕获sigint然后将它转发给fork出的前台任务，即：子进程**不直接接收SIGINT信号**，所以fork出的子进程需要修改所属进程组。实验文档写道： `After the fork, but before the execve, the child process should call setpgid(0, 0)`，照做即可，将会把子进程的进程组号设置为与进程pid一致。
+- 父进程应该负责维护`jobs`全局变量，创建子进程后，父进程应调用`addjob(jobs, pid, FG, cmdline);`将任务信息添加到`jobs`。
+- 父进程`tsh`需要在等待前台任务执行完成，所以需要调用`waitfg(pid)`。注意此时我们还没有实现`waitfg`的功能。
+```c
+// eval 函数内部
+if (!builtin_cmd(argv)) {
+    volatile pid_t pid;
+    pid = Fork();
+    if (!pid) {
+        if (execve(argv[0], argv, NULL) < 0) {
+            setpgid(0, 0);
+            printf("%s: Command not found\n", argv[0]);
+            exit(0);
+        }
+    }
+    addjob(jobs, pid, FG, cmdline);
+    waitfg(pid);
+}
+```
+- 子进程执行结束后，父进程负责回收进程。根据实验文档：`It is simpler to do all reaping in the handler.`所以子进程回收都在sigchld_handler中实现。对于前台任务，父进程只需要写wait和deletejob即可。实验文档写道：`The WUNTRACED and WNOHANG options to waitpid will also be useful.`。这说明：需要把这俩参数加到`waitpid`中。参数解释：①WNOHANG："wait no hang"，即：父进程不挂起。如果父进程发现还没有可回收的子进程，waitpid将不会阻塞，而是返回0。②WUNTRACED：如果子进程处于STOPPED状态，waitpid也返回。
+```c
+void sigchld_handler(int sig) {
+    while ((pid = waitpid(-1, NULL, WNOHANG | WUNTRACED)) > 0) {
+        deletejob(jobs, pid);
+    }
+    return;
+}
+```
+### 运行后台任务
+- trace04.txt会测试`./myspin 1 &`。注意trace04.txt的`/bin/echo -e tsh> ./myspin 1 \046`依然是前台任务。
+- 后台任务与前台任务的区别在于：父进程无需等待。在`eval`函数的`if (!builtin_cmd(argv))`分支内，沿用执行前台任务的代码，进行少量调整即可。
+- 运行`make rtest04`，你会发现，程序会输出一行：`[1] (4287) ./myspin 1 &`，参照该格式，父进程应该执行`print`语句打印出后台任务的`jid`,`pid`(`tsh.c`中提供了接口`int pid2jid(pid_t pid)`),以及执行的命令`cmdline`。字符串模板是`"[%d] (%d) %s"`。需要注意的细节是：cmdline读取的输入本身带有`\n`字符，所以字符串模板中无需以`\n`结尾。
+```c
+// eval 函数内部
+if (!builtin_cmd(argv)) {
+    volatile pid_t pid;
+    pid = Fork();
+    if (!pid) {
+        if (execve(argv[0], argv, NULL) < 0) {
+            setpgid(0, 0);
+            printf("%s: Command not found\n", argv[0]);
+            exit(0);
+        }
+    }
+    //! \note 添加判断：bg = parseline(buf, argv); 若 bg = 1 表明为后台任务。
+    addjob(jobs, pid, bg ? BG : FG, cmdline);
+    if (bg)
+        waitfg(pid); // 前台任务需要父进程等待
+    else // 打印后台任务的相关信息
+        printf("[%d] (%d) %s", pid2jid(pid), pid, cmdline);
+}
+```
+### 信号处理函数：SIGINT
+- trace06.txt、trace07.txt 开始测试 SIGINT。`tsh.c`中对`sigint_handler`函数的注释为：Catch it and send it along to the foreground job。所以信号处理函数的作用就是将sigint信号转发给前台进程。即：如果前台进程的进程号是`fg_pid`，调用`kill(fg_pid, SIGINT)`即可。`tsh.c`提供了辅助函数`fg_pid`寻找前台进程的pid：`fg_pid = fgpid(jobs)`。所以信号处理函数的核心逻辑是：
+```c
+fg_pid = fgpid(jobs);
+if (fg_pid != 0) // fg_pid == 0 表示当前没有正在运行的前台进程
+    kill(fg_pid, SIGINT);
+```
+- 考虑到`fgpid(jobs)`会访问全局变量`jobs`，所以需要暂时阻塞全部信号以对全局变量`jobs`进行保护。
+- 实验文档中写道`When you type ctrl-c, the shell should catch the resulting SIGINT and then forward it to the appropriate foreground job`，这意味着，我们需要向进程组发送信号，所以kill调用应该写为`kill(-fg_pid, SIGINT)`(在fg_pid前面加个负号)。
+- 最终形成的信号处理函数如下：
+```c
+//! \note sigtstp_handler 的写法与下面的 sigint_handler 基本一致，仅替换函数体内的 kill 函数即可。
+void sigint_handler(int sig) {
+    pid_t fg_pid;
+    sigset_t all_mask, prev_mask;
+    sigfillset(&all_mask);
+    sigprocmask(SIG_BLOCK, &all_mask, &prev_mask);
+    fg_pid = fgpid(jobs);
+    if (fg_pid != 0) {
+        kill(-fg_pid, SIGINT);
+        // 对于函数 sigtstp_handler, 将 kill 语句替换为 kill(-fg_pid, SIGSTP)
+    }
+    sigprocmask(SIG_SETMASK, &prev_mask, NULL);
+    return;
+}
+```
+- 若运行`make rtest06`，你会发现输出语句包含`Job [1] (7058) terminated by signal 2`。所以在父进程回收由SIGINT杀死的子进程时(即：在`sigchld_handler`里)，需要进行`printf`输出，模板字符串是`Job [%d] (%d) terminated by signal %d\n`。另外，该实验中只有SIGINT导致的子进程回收需要`printf`。所以要记录是哪个信号导致子进程停止，需填写`waitpid`的第二个参数，以记录子进程状态改变的具体原因。
+- 我们使用`child_status`记录子进程的状态，然后使用一些C语言内置的宏函数来确认子进程是由于收到SIGINT而停止的。
+```c
+void sigchld_handler(int sig) {
+    int child_status = 0, pid = 0;
+    while ((pid = waitpid(-1, &child_status, WNOHANG | WUNTRACED)) > 0) {
+        // WIFSIGNALED 判定子进程确实是被信号杀死的，然后用 WTERMSIG 去看是哪个信号
+        if (WIFSIGNALED(child_status) && WTERMSIG(child_status) == SIGINT)
+            printf("Job [%d] (%d) terminated by signal %d\n", pid2jid(pid), pid, WTERMSIG(child_status));    
+        deletejob(jobs, pid);
+    }
+    return;
+}
+```
+### 信号处理函数：SIGSTP 及 STOPPED 进程的处理
+- `sigstp_handler`：拷贝上方`sigint_handler`的实现，把`kill(-fg_pid, SIGINT);`替换为`kill(-fg_pid, SIGSTP)`即可。
+- 如果运行`make rtest08`，发现对于接收 SIGSTP 的子进程，父进程需要输出类似于`Job [2] (11506) stopped by signal 20`这种。SIGTSTP 会导致子进程进入 STOPPED 状态，而 Child stopped 会给父进程发送 SIGCHLD 信号，因此，依然可以在`sigchld_handler`完成语句输出。
+```c
+void sigchld_handler(int sig) {
+    int child_status = 0, pid = 0;
+    while ((pid = waitpid(-1, &child_status, WNOHANG | WUNTRACED)) > 0) {
+        if (WIFSTOPPED(child_status)) {
+            getjobpid(jobs, pid)->state = ST;
+            printf("Job [%d] (%d) stopped by signal %d\n", pid2jid(pid), pid, WSTOPSIG(child_status));               
+        } else { 
+            if (WIFSIGNALED(child_status) && WTERMSIG(child_status) == SIGINT)
+                printf("Job [%d] (%d) terminated by signal %d\n", pid2jid(pid), pid, WTERMSIG(child_status));    
+            deletejob(jobs, pid);
+        }
+    }
+    return;
+}
+```
+### 内置命令实现：bg和fg
+- 根据`tsh.c`，需要在`do_bgfg`中实现。实验文档中对这两个命令的功能做了详细的说明：`bg <job>: Change a stopped background job to a running background job.`，`fg <job>: Change a stopped or running background job to a running in the foreground.`。
+- 可先在`builtin_cmd`完成`bg` `fg`命令的识别、参数初步检验，然后在`builtin_cmd`调用`do_bgfg`函数。完整的`builtin_cmd`函数如下：
+```c
+int builtin_cmd(char **argv) {
+    if (!strncmp(argv[0], "quit", 4)) {
+        exit(0);
+    }
+    if (!strncmp(argv[0], "jobs", 4)) {
+        sigset_t full_mask, prev_mask;
+        sigfillset(&full_mask);
+        sigprocmask(SIG_BLOCK, &full_mask, &prev_mask);
+        listjobs(jobs);
+        sigprocmask(SIG_SETMASK, &prev_mask, NULL);
+        return 1;
+    }
+    int is_bg = !strncmp(argv[0], "bg", 2);
+    int is_fg = !strncmp(argv[0], "fg", 2);
+    if (is_bg || is_fg) {
+        if (!argv[1]) {
+            printf("%s command requires PID or %%jobid argument\n", 
+                   is_bg ? "bg" : "fg");
+            return 1;
+        }
+        // 检查第一个是否是数字？
+        if (!isdigit(argv[1][0]) && argv[1][0] != '%') {
+            printf("%s: argument must be a PID or %%jobid\n", 
+                   is_bg ? "bg" : "fg");
+
+            return 1;          
+        }
+        do_bgfg(argv);
+        return 1;
+    }
+    return 0;     /* not a builtin command */
+}
+```
+- `do_bgfg`需要对bg、fg的参数进行区分，根据实验文档`“%5”denotes JID 5, and “5” denotes PID 5`,参数加百分号是jid，不加百分号是pid。检验参数是否有百分号只需要`argv[1][0] == '%'`。
+- `do_bgfg`需要检验传入的jid/pid是否是有效的。可借助`tsh.c`中提供的辅助函数：`getjobjid/getjobpid`。这俩函数如果返回`NULL`，则表明参数的jid/pid是无效的。`do_bgfg`直接返回。
+- 无论是`bg`还是`fg`，都需要向目标进程发送`SIGCONT`信号，使用系统调用`kill`对进程`pid`取负值，向目标进程组发送SIGCONT信号即可。
+- 若是`bg`命令，将目标进程状态设置为`BG`即可。若为`fg`命令，需将目标进程状态设置为`FG`，由于子进程转为前台运行，因此父进程需要等待子进程结束，所以父进程调用`waitfg`。
+- 最后，注意访问全局数据结构`jobs`时暂时阻塞所有信号，并在恰当时机解除阻塞即可。
+```c
+void do_bgfg(char **argv) {   
+    sigset_t full_mask, prev_mask;
+    sigfillset(&full_mask);
+    sigprocmask(SIG_BLOCK, &full_mask, &prev_mask);
+    int is_jid = (argv[1][0] == '%');
+    struct job_t* this_job = is_jid ? 
+                              getjobjid(jobs, atoi(argv[1] + 1))
+                              : getjobpid(jobs, atoi(argv[1]));
+    if (!this_job) {
+        sigprocmask(SIG_SETMASK, &prev_mask, NULL);  
+        is_jid ? printf("%s: No such job\n", argv[1]) 
+               : printf("(%s): No such process\n", argv[1]);
+        return;
+    }
+    kill(-this_job->pid, SIGCONT);
+    if (!strncmp(argv[0], "bg", 2)) {
+        this_job->state = BG;
+        printf("[%d] (%d) %s", this_job->jid, this_job->pid, this_job->cmdline);
+        sigprocmask(SIG_SETMASK, &prev_mask, NULL);  
+        return;
+    }
+    // handle built-in command fg
+    this_job->state = FG;
+    sigprocmask(SIG_SETMASK, &prev_mask, NULL);  
+    waitfg(this_job->pid);
+    return;
+}
+```
+### 显式等待信号：waitfg
+- 由于子进程回收都在`sigchld_handler`中进行，所以waitfg只需要阻塞父进程。根据CSAPP教材中“显式等待信号”的代码示例：
+```c
+sigprocmask(SIG_BLOCK, &mask, &prev); /* Block SIGCHLD */
+// ...
+while (!pid) // 若子进程在 sigchld_handler被回收，pid将不为 0
+    sigsuspend(&prev);
+```
+- 我们的`waitfg`可直接参考上面的代码。将检测`!pid`替换为调用`fgpid(jobs)`检测是否还存在前台进程。同时，由于要访问全局变量`jobs`，所以要在`fgpid(jobs)`判断前暂时阻塞所有信号。然后在while判断后，调用`sigsuspend(&prev_mask);`，该调用可以原子化地【解除信号阻塞，调用`pause()`，在`pause()`返回后恢复对所有信号的阻塞】。
+```c
+void waitfg(pid_t pid) {
+    sigset_t all_mask, prev_mask;
+    sigfillset(&all_mask);
+    sigprocmask(SIG_BLOCK, &all_mask, &prev_mask);
+    while (fgpid(jobs)) {
+        sigsuspend(&prev_mask);
+    }
+    sigprocmask(SIG_SETMASK, &prev_mask, NULL);
+    return;
+}
+```
+### eval和sigchld_handler的同步问题
+- 前文为了直观展示处理逻辑，没有对`eval`和`sigchld_handler`屏蔽信号以避免并发问题。
+- 其中，`sigchld_handler`由于涉及全局数据结构`jobs`的访问，所以仅需要在访问`jobs`前阻塞所有信号，并在访问后解除阻塞。
+```c
+void sigchld_handler(int sig) {
+    int child_status = 0, pid = 0;
+    sigset_t all_mask, prev_mask;
+    sigfillset(&all_mask);
+    while ((pid = waitpid(-1, &child_status, WNOHANG | WUNTRACED)) > 0) {
+        sigprocmask(SIG_BLOCK, &all_mask, &prev_mask);
+        if (WIFSTOPPED(child_status)) {
+            getjobpid(jobs, pid)->state = ST;
+            printf("Job [%d] (%d) stopped by signal %d\n", pid2jid(pid), pid, WSTOPSIG(child_status));               
+        } else { 
+            if (WIFSIGNALED(child_status) && WTERMSIG(child_status) == SIGINT)
+                printf("Job [%d] (%d) terminated by signal %d\n", pid2jid(pid), pid, WTERMSIG(child_status));    
+            deletejob(jobs, pid);
+        }
+        sigprocmask(SIG_SETMASK, &prev_mask, NULL);
+    }
+    return;
+}
+```
+- `eval`函数除了需要保护`jobs`全局变量外，还需要在创建子进程前阻塞`SIGCHLD`信号，否则可能导致子进程先执行结束，父进程收到SIGCHLD信号后调用`sigchld_handler`中的`deletejob`，使得`deletejob`先于`addjob`执行，造成并发问题。注意：由于父进程在fork调用之前阻塞了`SIGCHLD`信号，因此fork出的子进程需要尽快解除对于SIGCHLD的阻塞。
+```c
+void eval(char *cmdline) {
+    sigset_t old_mask, new_mask, full_mask;
+    int bg = 0;
+    char* argv[MAXARGS];
+    char buf[MAXLINE];
+    volatile pid_t pid;
+    strcpy(buf, cmdline);
+    sigemptyset(&new_mask);
+    sigaddset(&new_mask, SIGCHLD);
+    sigfillset(&full_mask);
+    bg = parseline(buf, argv);
+    if (argv[0] == NULL)  return;
+    if (!builtin_cmd(argv)) {
+        sigprocmask(SIG_BLOCK, &new_mask, &old_mask);
+        pid = Fork();
+        if (!pid) {
+            // puts the child in a new process group whose group ID is identical to the child's PID
+            setpgid(0, 0); 
+            sigprocmask(SIG_SETMASK, &old_mask, NULL);
+            if (execve(argv[0], argv, NULL) < 0) {
+                printf("%s: Command not found\n", argv[0]);
+                exit(0);
+            }
+        }
+        // G3: Protect accesses to shared data structures by temporarily blocking all signals.  
+        sigprocmask(SIG_SETMASK, &full_mask, NULL);
+        addjob(jobs, pid, bg ? BG : FG, cmdline);
+        sigprocmask(SIG_SETMASK, &old_mask, NULL);
+
+        if (!bg)
+            waitfg(pid);
+        else 
+            printf("[%d] (%d) %s", pid2jid(pid), pid, cmdline);
+    }
+    return;
+}
+```
+### 自动化测试脚本
+- 由于需要逐个核对你的输出和标准输出是否完全一致，可以在实验目录创建`autotest.py`并写入下列代码，批量运行测试。
+```python
+import os
+import subprocess
+script_dir = os.path.dirname(os.path.abspath(__file__))
+test_seqnums = ["{:02d}".format(elem) for elem in range(1, 17)]
+for seqnum in test_seqnums[:16]:
+    print(f"===============TEST{seqnum}===============")
+    result = subprocess.run(["make", "test" + seqnum], 
+                            capture_output=True, text=True, cwd=script_dir)
+    print(result.stdout, end = "")
+    print()
+    ref_result = subprocess.run(["make", "rtest" + seqnum], 
+                                capture_output=True, text=True, cwd=script_dir)
+    print(ref_result.stdout, end = "")
+```
+### 参考实现
+```c
+pid_t Fork(void) {
+    pid_t pid = 0;
+    if ((pid = fork()) < 0) 
+        unix_error("vely sad. fork error.\n");
+    return pid;
+}
+
+void eval(char *cmdline) {
+    sigset_t old_mask, new_mask, full_mask;
+    int bg = 0;
+    char* argv[MAXARGS];
+    char buf[MAXLINE];
+    volatile pid_t pid;
+    strcpy(buf, cmdline);
+    sigemptyset(&new_mask);
+    sigaddset(&new_mask, SIGCHLD);
+    sigfillset(&full_mask);
+    bg = parseline(buf, argv);
+    if (argv[0] == NULL)  return;
+    if (!builtin_cmd(argv)) {
+        sigprocmask(SIG_BLOCK, &new_mask, &old_mask);
+        pid = Fork();
+        if (!pid) {
+            setpgid(0, 0); 
+            sigprocmask(SIG_SETMASK, &old_mask, NULL);
+            if (execve(argv[0], argv, NULL) < 0) {
+                printf("%s: Command not found\n", argv[0]);
+                exit(0);
+            }
+        }
+        sigprocmask(SIG_SETMASK, &full_mask, NULL);
+        addjob(jobs, pid, bg ? BG : FG, cmdline);
+        sigprocmask(SIG_SETMASK, &old_mask, NULL);
+
+        if (!bg)
+            waitfg(pid);
+        else 
+            printf("[%d] (%d) %s", pid2jid(pid), pid, cmdline);
+    }
+    return;
+}
+
+int builtin_cmd(char **argv) {
+    if (!strncmp(argv[0], "quit", 4))
+        exit(0);
+    if (!strncmp(argv[0], "jobs", 4)) {
+        sigset_t full_mask, prev_mask;
+        sigfillset(&full_mask);
+        sigprocmask(SIG_BLOCK, &full_mask, &prev_mask);
+        listjobs(jobs);
+        sigprocmask(SIG_SETMASK, &prev_mask, NULL);
+        return 1;
+    }
+    int is_bg = !strncmp(argv[0], "bg", 2);
+    int is_fg = !strncmp(argv[0], "fg", 2);
+    if (is_bg || is_fg) {
+        if (!argv[1]) {
+            printf("%s command requires PID or %%jobid argument\n", 
+                   is_bg ? "bg" : "fg");
+            return 1;
+        }
+        if (!isdigit(argv[1][0]) && argv[1][0] != '%') {
+            printf("%s: argument must be a PID or %%jobid\n", 
+                   is_bg ? "bg" : "fg");
+
+            return 1;          
+        }
+        do_bgfg(argv);
+        return 1;
+    }
+    return 0;
+}
+
+void do_bgfg(char **argv) {   
+    sigset_t full_mask, prev_mask;
+    sigfillset(&full_mask);
+    sigprocmask(SIG_BLOCK, &full_mask, &prev_mask);
+    int is_jid = (argv[1][0] == '%');
+    struct job_t* this_job = is_jid ? 
+                              getjobjid(jobs, atoi(argv[1] + 1))
+                              : getjobpid(jobs, atoi(argv[1]));
+    if (!this_job) {
+        sigprocmask(SIG_SETMASK, &prev_mask, NULL);  
+        is_jid ? printf("%s: No such job\n", argv[1]) 
+               : printf("(%s): No such process\n", argv[1]);
+        return;
+    }
+    kill(-this_job->pid, SIGCONT);
+    if (!strncmp(argv[0], "bg", 2)) {
+        this_job->state = BG;
+        printf("[%d] (%d) %s", this_job->jid, this_job->pid, this_job->cmdline);
+        sigprocmask(SIG_SETMASK, &prev_mask, NULL);  
+        return;
+    }
+    this_job->state = FG;
+    sigprocmask(SIG_SETMASK, &prev_mask, NULL);  
+    waitfg(this_job->pid);
+    return;
+}
+
+void waitfg(pid_t pid) {
+    sigset_t all_mask, prev_mask;
+    sigfillset(&all_mask);
+    sigprocmask(SIG_BLOCK, &all_mask, &prev_mask);
+    while (fgpid(jobs)) {
+        sigsuspend(&prev_mask);
+    }
+    sigprocmask(SIG_SETMASK, &prev_mask, NULL);
+    return;
+}
+
+void sigchld_handler(int sig) {
+    int child_status = 0, pid = 0;
+    sigset_t all_mask, prev_mask;
+    sigfillset(&all_mask);
+    while ((pid = waitpid(-1, &child_status, WNOHANG | WUNTRACED)) > 0) {
+        sigprocmask(SIG_BLOCK, &all_mask, &prev_mask);
+        if (WIFSTOPPED(child_status)) {
+            getjobpid(jobs, pid)->state = ST;
+            printf("Job [%d] (%d) stopped by signal %d\n", pid2jid(pid), pid, WSTOPSIG(child_status));               
+        } else { 
+            if (WIFSIGNALED(child_status) && WTERMSIG(child_status) == SIGINT)
+                printf("Job [%d] (%d) terminated by signal %d\n", pid2jid(pid), pid, WTERMSIG(child_status));    
+            deletejob(jobs, pid);
+        }
+        sigprocmask(SIG_SETMASK, &prev_mask, NULL);
+    }
+    return;
+}
+
+void sigint_handler(int sig) {
+    pid_t fg_pid;
+    sigset_t all_mask, prev_mask;
+    sigfillset(&all_mask);
+    sigprocmask(SIG_BLOCK, &all_mask, &prev_mask);
+    fg_pid = fgpid(jobs);
+    if (fg_pid != 0) {
+        kill(-fg_pid, SIGINT);
+    }
+    sigprocmask(SIG_SETMASK, &prev_mask, NULL);
+    return;
+}
+
+void sigstp_handler(int sig) {
+    pid_t fg_pid;
+    sigset_t all_mask, prev_mask;
+    sigfillset(&all_mask);
+    sigprocmask(SIG_BLOCK, &all_mask, &prev_mask);
+    fg_pid = fgpid(jobs);
+    if (fg_pid != 0) {
+        kill(-fg_pid, SIGSTP);
+    }
+    sigprocmask(SIG_SETMASK, &prev_mask, NULL);
+    return;
+}
+```
 ## 一些问题
 ### 前台进程组
 - 前台进程组指的是可以直接与终端进行交互的进程组，即：只有前台进程组可以从终端（键盘）读取数据；当你按下Ctrl+C，Ctrl+Z，信号会发给（广播给）前台进程组；当后台进程试图读取终端输入，系统会向其发送 SIGTTIN 信号暂停这个后台进程。
